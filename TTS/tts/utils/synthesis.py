@@ -64,7 +64,7 @@ def compute_style_mel(style_wav, ap, cuda=False):
     return style_mel
 
 
-def run_model_torch(model, inputs, CONFIG, truncated, speaker_id=None, style_mel=None, speaker_embeddings=None):
+def run_model_torch(model, inputs, CONFIG, truncated, sample_rate, hop_length, speaker_id=None, style_mel=None, speaker_embeddings=None):
     if "tacotron" in CONFIG.model.lower():
         if CONFIG.gst:
             decoder_output, postnet_output, alignments, stop_tokens = model.inference(
@@ -84,11 +84,11 @@ def run_model_torch(model, inputs, CONFIG, truncated, speaker_id=None, style_mel
         if hasattr(model, "module"):
             # distributed model
             postnet_output, _, _, _, alignments, _, _ = model.module.inference(
-                inputs, inputs_lengths, g=speaker_id if speaker_id is not None else speaker_embeddings
+                inputs, inputs_lengths, sample_rate, hop_length, g=speaker_id if speaker_id is not None else speaker_embeddings
             )
         else:
             postnet_output, _, _, _, alignments, _, _ = model.inference(
-                inputs, inputs_lengths, g=speaker_id if speaker_id is not None else speaker_embeddings
+                inputs, inputs_lengths, sample_rate, hop_length, g=speaker_id if speaker_id is not None else speaker_embeddings
             )
         postnet_output = postnet_output.permute(0, 2, 1)
         # these only belong to tacotron models.
@@ -287,7 +287,7 @@ def synthesis(
     # synthesize voice
     if backend == "torch":
         decoder_output, postnet_output, alignments, stop_tokens = run_model_torch(
-            model, inputs, CONFIG, truncated, speaker_id, style_mel, speaker_embeddings=speaker_embedding
+            model, inputs, CONFIG, truncated, ap.sample_rate, ap.hop_length, speaker_id, style_mel, speaker_embeddings=speaker_embedding
         )
         postnet_output, decoder_output, alignment, stop_tokens = parse_outputs_torch(
             postnet_output, decoder_output, alignments, stop_tokens

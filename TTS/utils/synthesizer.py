@@ -4,6 +4,7 @@ from typing import List
 import numpy as np
 import pysbd
 import torch
+import librosa
 
 from TTS.config import load_config
 from TTS.tts.utils.generic_utils import setup_model
@@ -238,6 +239,7 @@ class Synthesizer(object):
             if not use_gl:
                 # denormalize tts output based on tts audio config
                 mel_postnet_spec = self.ap.denormalize(mel_postnet_spec.T).T
+                print(f'Mel Spec Duration={librosa.get_duration(sr=self.ap.sample_rate, S=mel_postnet_spec.T, n_fft=self.ap.fft_size, hop_length=self.ap.hop_length)}')
                 device_type = "cuda" if self.use_cuda else "cpu"
                 # renormalize spectrogram based on vocoder config
                 vocoder_input = self.vocoder_ap.normalize(mel_postnet_spec.T)
@@ -259,12 +261,15 @@ class Synthesizer(object):
             if not use_gl:
                 waveform = waveform.numpy()
             waveform = waveform.squeeze()
+            
+            wav = waveform * (32767 / max(0.01, np.max(np.abs(waveform))))
+            print(f'Wave Duration={librosa.get_duration(y=wav, sr=self.ap.sample_rate)}')
 
             # trim silence
             waveform = trim_silence(waveform, self.ap)
 
             wavs += list(waveform)
-            wavs += [0] * 10000
+            # wavs += [0] * 10000
 
         # compute stats
         process_time = time.time() - start_time

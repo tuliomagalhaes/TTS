@@ -4,6 +4,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+import librosa
+
 from TTS.tts.layers.glow_tts.decoder import Decoder
 from TTS.tts.layers.glow_tts.encoder import Encoder
 from TTS.tts.layers.glow_tts.monotonic_align import generate_path, maximum_path
@@ -255,7 +257,7 @@ class GlowTTS(nn.Module):
         return y, logdet
 
     @torch.no_grad()
-    def inference(self, x, x_lengths, g=None):
+    def inference(self, x, x_lengths, sample_rate, hop_length, g=None):
         if g is not None:
             if self.speaker_embedding_dim:
                 g = F.normalize(g).unsqueeze(-1)
@@ -265,22 +267,34 @@ class GlowTTS(nn.Module):
         # embedding pass
         o_mean, o_log_scale, o_dur_log, x_mask = self.encoder(x, x_lengths, g=g)
         # compute output durations
-        w = (torch.exp(o_dur_log) - 1) * x_mask * self.length_scale
-        w_ceil = torch.ceil(w)
-        y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
+        expected_duration = 1.4 # Duration in seconds. TODO: pass this as a parameter to inference function
+        w = self.__calculate_duration(o_dur_log, x_mask, expected_duration, sample_rate, hop_length)
+        y_lengths = torch.clamp_min(torch.sum(w, [1, 2]), 1).long()
         y_max_length = None
         # compute masks
         y_mask = torch.unsqueeze(sequence_mask(y_lengths, y_max_length), 1).to(x_mask.dtype)
         attn_mask = torch.unsqueeze(x_mask, -1) * torch.unsqueeze(y_mask, 2)
         # compute attention mask
-        attn = generate_path(w_ceil.squeeze(1), attn_mask.squeeze(1)).unsqueeze(1)
+        attn = generate_path(w.squeeze(1), attn_mask.squeeze(1)).unsqueeze(1)
         y_mean, y_log_scale, o_attn_dur = self.compute_outputs(attn, o_mean, o_log_scale, x_mask)
 
         z = (y_mean + torch.exp(y_log_scale) * torch.randn_like(y_mean) * self.inference_noise_scale) * y_mask
         # decoder pass
         y, logdet = self.decoder(z, y_mask, g=g, reverse=True)
+
         attn = attn.squeeze(1).permute(0, 2, 1)
         return y, logdet, y_mean, y_log_scale, attn, o_dur_log, o_attn_dur
+
+    def __calculate_duration(self, o_dur_log, x_mask, duration, sample_rate, hop_length):
+        w = self.__transform_duration_log_to_linear(o_dur_log, x_mask, self.length_scale)
+        inference_duration = (torch.sum(w).item() / (sample_rate / hop_length)) + 0.117
+        diff_duration = (duration - inference_duration) - 0.117
+        new_length_scale = self.length_scale + (diff_duration / inference_duration)
+        return self.__transform_duration_log_to_linear(o_dur_log, x_mask, new_length_scale)
+
+    def __transform_duration_log_to_linear(self, o_dur_log, x_mask, length_scale):
+        w = (torch.exp(o_dur_log) - 1) * x_mask * length_scale
+        return torch.ceil(w)
 
     def preprocess(self, y, y_lengths, y_max_length, attn=None):
         if y_max_length is not None:
